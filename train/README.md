@@ -48,3 +48,9 @@ You can modify the training configuration in `train/config/normal_lora.yaml`.
 
 
 ## MoE-LoRA Training
+
+```bash
+bash train/script/train_moe.sh
+```
+
+You can modify the training configuration in `train/config/moe_lora.yaml`. 
