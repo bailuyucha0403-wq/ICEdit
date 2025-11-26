@@ -4,6 +4,7 @@ import numpy as np
 from transformers import pipeline
 # import cv2
 import torch
+import torch.distributed as dist
 import os
 from datetime import datetime
 
@@ -153,6 +154,88 @@ class TrainingCallback(L.Callback):
                 generator=torch.Generator("cpu").manual_seed(666)
             ).images[0]
             image.save(os.path.join(save_path, f'flux-fill-test-{self.total_steps}-{i}-{condition_type}.jpg'))
-        
+
         pl_module.flux_fill_pipe.transformer.train()
+
+
+class DDPVerificationCallback(L.Callback):
+    """Lightweight runtime checks to confirm DDP synchronization.
+
+    - On fit start: validate parameters are in sync (checksum via all-reduce).
+    - After the first backward: validate gradients are synchronized in the same way.
+
+    All checks are skipped when distributed is unavailable or not initialized.
+    """
+
+    def __init__(
+        self,
+        check_params: bool = True,
+        check_grads_after_steps: int = 1,
+        atol: float = 1e-3,
+        rtol: float = 1e-4,
+    ) -> None:
+        super().__init__()
+        self.check_params = check_params
+        self.check_grads_after_steps = check_grads_after_steps
+        self.atol = atol
+        self.rtol = rtol
+        self._grad_checked = False
+
+    def _is_distributed(self) -> bool:
+        return dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
+
+    def _checksum(self, tensors, device: torch.device) -> torch.Tensor:
+        checksum = torch.zeros(1, device=device, dtype=torch.float32)
+        for tensor in tensors:
+            checksum += tensor.detach().to(device=device, dtype=torch.float32).sum()
+        return checksum
+
+    def _allclose_across_ranks(self, value: torch.Tensor):
+        world_size = dist.get_world_size()
+        reduced = value.clone()
+        dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
+        matches = torch.allclose(
+            reduced, value * world_size, rtol=self.rtol, atol=self.atol
+        )
+        return matches, reduced
+
+    def on_fit_start(self, trainer, pl_module):
+        if not (self.check_params and self._is_distributed()):
+            return
+
+        checksum = self._checksum(pl_module.parameters(), pl_module.device)
+        matches, reduced = self._allclose_across_ranks(checksum)
+        if dist.get_rank() == 0:
+            if matches:
+                print(
+                    f"[DDP verify] Parameter checksum synced across {dist.get_world_size()} ranks: {checksum.item():.6f}"
+                )
+            else:
+                print(
+                    f"[DDP verify][WARNING] Parameter checksum mismatch. local={checksum.item():.6f}, reduced={reduced.item():.6f}"
+                )
+
+    def on_after_backward(self, trainer, pl_module):
+        if self._grad_checked or not self._is_distributed():
+            return
+        if trainer.global_step + 1 < self.check_grads_after_steps:
+            return
+
+        grads = [p.grad for p in pl_module.parameters() if p.grad is not None]
+        if not grads:
+            return
+
+        checksum = self._checksum(grads, pl_module.device)
+        matches, reduced = self._allclose_across_ranks(checksum)
+        if dist.get_rank() == 0:
+            if matches:
+                print(
+                    f"[DDP verify] Gradient checksum synced across {dist.get_world_size()} ranks: {checksum.item():.6f}"
+                )
+            else:
+                print(
+                    f"[DDP verify][WARNING] Gradient checksum mismatch. local={checksum.item():.6f}, reduced={reduced.item():.6f}"
+                )
+
+        self._grad_checked = True
         
