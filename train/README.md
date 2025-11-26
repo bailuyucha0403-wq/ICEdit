@@ -69,3 +69,11 @@ You can modify the training configuration in `train/config/moe_lora.yaml`.
 - **易于调试/切换**：遇到问题时可以单步运行单进程（关闭 `accelerate launch`），也可以改用纯 Lightning 的 `Trainer(accelerator="gpu", devices=n, strategy="ddp")` 方式；两条路径底层都走 DDP，切换成本低。
 
 实践中，想要单独用 Lightning 自带的分布式也可以直接运行 `python -m src.train.train_moe` 并设置 `accelerator="gpu"`、`devices=<卡数>`、`strategy="ddp"`，底层同样走 DDP，同步方式一致。
+
+### 如何确认两张卡的梯度确实同步了？
+在设置了 `strategy="ddp"`（且每个进程 `devices=1`）后，可以用下面几项快速自查，确保两张 H800 的 Trainer 进程在同一套参数上做 AllReduce：
+
+- **启动日志检查**：Lightning 日志会打印 `Using strategy DDP`、`GPU available: True` 等字样；`accelerate` 会输出 `LOCAL_RANK/MASTER_ADDR/MASTER_PORT`，这些说明已进入 DDP 模式并建立通信。
+- **进程内校验**：在训练脚本里临时插入一行 `print(torch.distributed.get_world_size(), torch.distributed.get_rank())`（需在 `torch.distributed.is_initialized()` 为 True 后调用），两进程应分别输出 world size=2、rank 为 0/1。
+- **参数对齐检查**：在完成一次 `optimizer.step()` 后，在所有进程上对同一参数张量做 `allreduce` 或直接打印前几个元素，应保持一致；若不同步会看到数值逐步漂移。
+- **训练指标一致性**：开启 `strategy="ddp"` 后，Lightning 默认对 loss 做进程间平均并只在 rank 0 日志输出，训练/验证曲线应随两卡参与而加速收敛；若仍各跑各的，loss 曲线会在两份日志中独立出现且不做平均。
