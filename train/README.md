@@ -63,4 +63,9 @@ You can modify the training configuration in `train/config/moe_lora.yaml`.
 - **角色划分**：在本仓库脚本中，`accelerate launch` 只负责拉起多进程并设置 `LOCAL_RANK`、`WORLD_SIZE` 等环境变量；训练循环仍由 Lightning 的 `Trainer.fit` 执行。
 - **为何可组合**：`Trainer` 并未在脚本里显式指定 `devices`/`strategy` 时不会额外再 fork 进程，因此用 `accelerate launch` 先启动进程再交给 Lightning，不会出现重复的分布式初始化；若想启用梯度同步，只需在 `Trainer` 中设置 `strategy="ddp"` 等参数（每个进程 `devices=1`），即可复用同一套 DDP 环境。
 
+### 这样结合的实际好处（对比单独使用）
+- **继承各自长处**：`accelerate` 负责简化多机/多卡进程拉起与环境变量管理，Lightning 则聚焦训练循环、回调、日志、精度管理等高层能力；组合后同时保留两者的便利性。
+- **快速迁移旧配置**：已有的 `accelerate_config.yaml` 或启停脚本可以复用，不必把启动逻辑全部改写成 Lightning CLI；只需在 `Trainer` 配置分布式策略即可获得梯度同步。
+- **易于调试/切换**：遇到问题时可以单步运行单进程（关闭 `accelerate launch`），也可以改用纯 Lightning 的 `Trainer(accelerator="gpu", devices=n, strategy="ddp")` 方式；两条路径底层都走 DDP，切换成本低。
+
 实践中，想要单独用 Lightning 自带的分布式也可以直接运行 `python -m src.train.train_moe` 并设置 `accelerator="gpu"`、`devices=<卡数>`、`strategy="ddp"`，底层同样走 DDP，同步方式一致。
