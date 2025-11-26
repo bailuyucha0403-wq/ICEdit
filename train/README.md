@@ -53,4 +53,14 @@ You can modify the training configuration in `train/config/normal_lora.yaml`.
 bash train/script/train_moe.sh
 ```
 
-You can modify the training configuration in `train/config/moe_lora.yaml`. 
+You can modify the training configuration in `train/config/moe_lora.yaml`.
+
+## Distributed training launchers（分布式启动器说明）
+
+当前脚本同时提到 `accelerate launch` 和 Lightning 的 `Trainer`，它们可以结合使用且不会产生“双重分布式”冲突，原因如下：
+
+- **共同点**：两种方式最终都依赖 PyTorch Distributed（DDP）的通信栈做梯度 AllReduce。无论是由 `accelerate` 还是 Lightning 来启动进程，真正的同步都是在 DDP 后端完成的。
+- **角色划分**：在本仓库脚本中，`accelerate launch` 只负责拉起多进程并设置 `LOCAL_RANK`、`WORLD_SIZE` 等环境变量；训练循环仍由 Lightning 的 `Trainer.fit` 执行。
+- **为何可组合**：`Trainer` 并未在脚本里显式指定 `devices`/`strategy` 时不会额外再 fork 进程，因此用 `accelerate launch` 先启动进程再交给 Lightning，不会出现重复的分布式初始化；若想启用梯度同步，只需在 `Trainer` 中设置 `strategy="ddp"` 等参数（每个进程 `devices=1`），即可复用同一套 DDP 环境。
+
+实践中，想要单独用 Lightning 自带的分布式也可以直接运行 `python -m src.train.train_moe` 并设置 `accelerator="gpu"`、`devices=<卡数>`、`strategy="ddp"`，底层同样走 DDP，同步方式一致。
