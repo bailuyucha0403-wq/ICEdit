@@ -77,3 +77,7 @@ You can modify the training configuration in `train/config/moe_lora.yaml`.
 - **进程内校验**：在训练脚本里临时插入一行 `print(torch.distributed.get_world_size(), torch.distributed.get_rank())`（需在 `torch.distributed.is_initialized()` 为 True 后调用），两进程应分别输出 world size=2、rank 为 0/1。
 - **参数对齐检查**：在完成一次 `optimizer.step()` 后，在所有进程上对同一参数张量做 `allreduce` 或直接打印前几个元素，应保持一致；若不同步会看到数值逐步漂移。
 - **训练指标一致性**：开启 `strategy="ddp"` 后，Lightning 默认对 loss 做进程间平均并只在 rank 0 日志输出，训练/验证曲线应随两卡参与而加速收敛；若仍各跑各的，loss 曲线会在两份日志中独立出现且不做平均。
+
+### 代码内置的同步自检
+- 训练脚本默认开启 `DDPVerificationCallback`：在训练开始时做一次参数 checksum all-reduce 校验，在首次 backward 后做一次梯度 checksum 校验，并在 rank 0 打印结果。若不需要可在配置里设置 `enable_ddp_verification: false`，或用 `verify_ddp_grads_after_steps` 推迟梯度检查步数。
+- 当 `WORLD_SIZE>1` 时，脚本会自动把 Trainer 的 `strategy` 缺省为 `ddp`，并将 `accelerator`/`devices` 设为 GPU 单卡 per-rank（也可在配置里显式覆盖）。这样在 `accelerate launch` 多卡模式下可以直接得到梯度同步并配合上面的自检输出。

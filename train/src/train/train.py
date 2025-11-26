@@ -14,7 +14,7 @@ from .data import (
     EditDataset_with_Omini
 )
 from .model import OminiModel
-from .callbacks import TrainingCallback
+from .callbacks import TrainingCallback, DDPVerificationCallback
 
 
 def get_rank():
@@ -54,6 +54,7 @@ def main():
     config = get_config()
     training_config = config["train"]
     run_name = time.strftime("%Y%m%d-%H%M%S")
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
     
     seed = 666
     np.random.seed(seed)
@@ -125,14 +126,22 @@ def main():
     )
 
     # Callbacks for logging and saving checkpoints
-    training_callbacks = (
-        [TrainingCallback(run_name, training_config=training_config)]
-        if is_main_process
-        else []
-    )
+    training_callbacks = []
+    if training_config.get("enable_ddp_verification", True):
+        training_callbacks.append(
+            DDPVerificationCallback(
+                check_params=training_config.get("verify_ddp_params", True),
+                check_grads_after_steps=training_config.get(
+                    "verify_ddp_grads_after_steps", 1
+                ),
+            )
+        )
+
+    if is_main_process:
+        training_callbacks.append(TrainingCallback(run_name, training_config=training_config))
 
     # Initialize trainer
-    trainer = L.Trainer(
+    trainer_kwargs = dict(
         accumulate_grad_batches=training_config["accumulate_grad_batches"],
         callbacks=training_callbacks,
         enable_checkpointing=False,
@@ -142,6 +151,24 @@ def main():
         max_epochs=training_config.get("max_epochs", -1),
         gradient_clip_val=training_config.get("gradient_clip_val", 0.5),
     )
+
+    accelerator = training_config.get("accelerator", None)
+    devices = training_config.get("devices", None)
+    strategy = training_config.get("strategy", None)
+
+    if world_size > 1:
+        accelerator = accelerator or "gpu"
+        strategy = strategy or "ddp"
+        devices = devices or 1
+
+    if accelerator is not None:
+        trainer_kwargs["accelerator"] = accelerator
+    if devices is not None:
+        trainer_kwargs["devices"] = devices
+    if strategy is not None:
+        trainer_kwargs["strategy"] = strategy
+
+    trainer = L.Trainer(**trainer_kwargs)
 
     setattr(trainer, "training_config", training_config)
 
